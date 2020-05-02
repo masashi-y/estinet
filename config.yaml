@@ -1,0 +1,8 @@
+addition:
+  num_samples: 100
+  arg_size: 10
+
+batch_size: 32
+num_epochs: 10
+optimizer: sgd(lr=0.01, momentum=0.9, weight_decay=0.0)
+val_interval: 200
