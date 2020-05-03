@@ -35,6 +35,7 @@ class MNISTAddition(torchvision.datasets.MNIST):
         targets, self.targets = self.targets, []
         dataset = []
         for img, target in zip(data, targets):
+            img = Image.fromarray(img.numpy(), mode='L')
             if self.transform is not None:
                 img = self.transform(img)
             if self.target_transform is not None:
@@ -43,7 +44,7 @@ class MNISTAddition(torchvision.datasets.MNIST):
 
         for _ in range(self.num_samples):
             imgs, nums = zip(*(dataset[i] for i in np.random.randint(0, len(dataset), self.arg_size)))
-            self.data.append(torch.stack(list(imgs)))
+            self.data.append(torch.cat(list(imgs), dim=0))
             self.targets.append(sum(nums))
         self.data = torch.stack(self.data)
 
@@ -53,7 +54,7 @@ class MNISTAddition(torchvision.datasets.MNIST):
             index {int} -- index
 
         Returns:
-            Tuple[torch.Tensor, int] -- pair of (x, y). shape of the former is (arg_size, 29, 28)
+            Tuple[torch.Tensor, int] -- pair of (x, y). shape of the former is (arg_size, 28, 28)
         """
-        imgs, target = self.data[index], int(self.targets[index])
+        imgs, target = self.data[index], float(self.targets[index])
         return imgs, target

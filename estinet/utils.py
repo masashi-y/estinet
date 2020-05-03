@@ -71,21 +71,10 @@ def optimizer_of(string, params):
     return optim_class(params, **kwargs)
 
 
-def random_probabilities(batch_size, n, m, device=None, requires_grad=True):
-    """returns a tensor with shape (batch size, n, m), that sums to one at the last dimension
+class Lambda(torch.nn.Module):
+    def __init__(self, fun):
+        super().__init__()
+        self.fun = fun
 
-    Arguments:
-        batch_size {int} -- batch size
-        n, m {int} -- number of items
-
-    Returns:
-        torch.Tensor -- (batch size, n, m)
-    """
-    x = torch.rand(n, m + 1, device=device)
-    x[:, 0] = 0.
-    x[:, -1] = 1.
-    x, _ = x.sort(1)
-    return (x[:, 1:] - x[:, :-1]).unsqueeze(0) \
-                                    .expand(batch_size, -1, -1) \
-                                    .contiguous() \
-                                    .requires_grad_(requires_grad)
+    def forward(self, x):
+        return self.fun(x)
