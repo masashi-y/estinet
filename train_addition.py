@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from torchvision import transforms
+from torchvision import transforms, datasets
 
 from estinet.dataset import Addition, MNISTAddition
 from estinet.nalu import StackedNALU
@@ -23,8 +23,8 @@ class SumEstimator(nn.Module):
         self.rnn = nn.LSTM(
             input_size=10,
             hidden_size=50,
-            num_layers=1,
-            dropout=0.5)
+            num_layers=1)
+            # dropout=0.5)
         self.nalu = StackedNALU(
             n_layers=2,
             in_dim=50,
@@ -52,11 +52,9 @@ class EstiNet(nn.Module):
             nn.Conv2d(1, 10, 5, stride=1),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2, stride=0),
-            nn.Dropout2d(0.25),
             nn.Conv2d(10, 20, 5, stride=1),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2, stride=0),   # (batch_size, 20, 4, 4)
-            nn.Dropout2d(0.50),
             utils.Lambda(lambda x: x.view(-1, 320)),
             nn.Linear(320, 10))
         self.entropy_threshold = entropy_threshold
@@ -71,18 +69,20 @@ class EstiNet(nn.Module):
         """
         arg_size, batch_size, _, _ = x.size()
         logits = self.argument_extractor(x.view((-1, 1, 28, 28)))
-        digits = F.gumbel_softmax(logits, tau=1).view((arg_size, batch_size, 10))
+        digits = torch.softmax(logits, dim=1).view((arg_size, batch_size, 10))
         preds = self.sum_estimator(digits)
         if y is None:
             return preds, None
 
-        sampled_sum = digits.argmax(dim=2).sum(dim=0) \
-                    .float().detach().requires_grad_(False)
-        entropy_term = torch.relu(utils.entropy(digits, dim=(0, 2)) - self.entropy_threshold)
+        sampled_digits = digits.argmax(dim=2) \
+                    .detach().requires_grad_(False)
+        sampled_sum = sampled_digits.float().sum(dim=0)
+        entropy_term = torch.relu(
+            utils.entropy(digits, dim=(0, 2)) - self.entropy_threshold).mean()
         loss = F.mse_loss(preds, y) \
-            + self.sum_estimator.loss(digits, sampled_sum) \
+            + self.sum_estimator.loss(utils.onehot(sampled_digits, 10), sampled_sum) \
             + self.entropy_weight * entropy_term
-        return preds, loss.mean()
+        return preds, loss
 
     def loss(self, x, y):
         _, loss = self(x, y)
@@ -95,6 +95,9 @@ class EstiNet(nn.Module):
         arg_size, batch_size, _, _ = x.size()
         digits = self.argument_extractor(x.view((-1, 1, 28, 28))).argmax(dim=1)
         return digits.view((arg_size, batch_size)).sum(dim=0)
+
+    def pred_mnist(self, x):
+        return torch.log_softmax(self.argument_extractor(x), dim=1)
 
 
 def collate_fn(batch):
@@ -151,10 +154,10 @@ def train(
 def main(cfg):
     logger.info(cfg.pretty())
 
-    torch.manual_seed(0)
+    torch.manual_seed(cfg.seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-    np.random.seed(0)
+    np.random.seed(cfg.seed)
 
     device = utils.get_device(cfg.device)
 
@@ -164,7 +167,8 @@ def main(cfg):
         logger.info('loading pretrained blackbox estimator at %s',
                     cfg.pretrained.blackbox_estimator)
         utils.load_model(
-            blackbox_estimator, cfg.pretrained.blackbox_estimator)
+            blackbox_estimator,
+            hydra.utils.to_absolute_path(cfg.pretrained.blackbox_estimator))
     else:
         logger.info('start pretraining blackbox estimator')
         pretrain_data_loader = DataLoader(
@@ -221,28 +225,57 @@ def main(cfg):
         batch_size=cfg.batch_size,
         collate_fn=collate_fn)
 
+    mnist_test_loader = DataLoader(
+        datasets.MNIST(
+            './data',
+            train=False,
+            download=cfg.download,
+            transform=transform),
+        batch_size=cfg.batch_size,
+        shuffle=True)
+
     estinet = EstiNet(
         blackbox_estimator,
         entropy_threshold=0.15,
         entropy_weight=0.15).to(device)
 
+    def mnist_test():
+        estinet.eval()
+        correct = 0
+        with torch.no_grad():
+            for x, y in mnist_test_loader:
+                x, y = x.to(device), y.to(device)
+                output = estinet.pred_mnist(x)
+                pred = output.argmax(dim=1, keepdim=True)
+                correct += pred.eq(y.view_as(pred)).sum().item()
+        logger.info('MNIST test accuracy: %d/%d (%f%%)',
+                    correct, len(mnist_test_loader.dataset),
+                    100. * correct / len(mnist_test_loader.dataset))
+
+    best_mae = float('inf')
     def compare_estinet_vs_nalu(data_loader, msg):
+        nonlocal best_mae
         error_estinet = 0.
         error_nalu = 0.
-        total = 0
         estinet.eval()
-        for x, y in data_loader:
-            x, y = x.to(device), y.to(device)
-            estinet_pred = estinet.pred(x, use_estimator=False)
-            error_estinet += (estinet_pred - y).abs().sum().item()
-            nalu_pred = estinet.pred(x, use_estimator=True)
-            error_nalu += (nalu_pred - y).abs().sum().item()
-            total += y.numel()
-        mae_estinet = error_estinet / total
-        mae_nalu = error_nalu / total
+        with torch.no_grad():
+            for x, y in data_loader:
+                x, y = x.to(device), y.to(device)
+                estinet_pred = estinet.pred(x, use_estimator=False)
+                error_estinet += (estinet_pred - y).abs().sum().item()
+                nalu_pred = estinet.pred(x, use_estimator=True)
+                error_nalu += (nalu_pred - y).abs().sum().item()
+        mae_estinet = error_estinet / len(data_loader.dataset)
+        mae_nalu = error_nalu / len(data_loader.dataset)
         logger.info(msg)
         logger.info('Mean absolute error (Estinet): %f', mae_estinet)
         logger.info('Mean absolute error (NALU): %f', mae_nalu)
+
+        if mae_estinet < best_mae:
+            logger.info('The metric improved. The parameters are saved')
+            utils.save_model(estinet, './best_model.th')
+            best_mae = mae_estinet
+        mnist_test()
 
     train(
         estinet,
@@ -255,6 +288,11 @@ def main(cfg):
         optimizer=cfg.optimizer,
         val_interval=cfg.val_interval)
 
+    logger.info('The final results using the best model')
+    utils.load_model(estinet, './best_model.th')
+    compare_estinet_vs_nalu(
+        test_small_loader,
+        f'Results on dataset with {cfg.mnist.test_small.arg_size} arg images')
     compare_estinet_vs_nalu(
         test_large_loader,
         f'Results on dataset with {cfg.mnist.test_large.arg_size} arg images')
