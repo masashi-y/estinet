@@ -24,14 +24,14 @@ When trained on a dataset consisting of lists of images of length `k=10`, the Es
 (from their paper)
 
 |Model| k = 10 | k = 100 |
-|:--:|:--:|:--:|:--:|
+|:---:|:---:|:---:|
 |NALU| 1.42 | 7.88 |
 |Estinet| 0. 42 | 3.3 |
 
 (reproduced result by me)
 
 |Model| k = 10 | k = 100 |
-|:--:|:--:|:--:|:--:|
+|:---:|:---:|:---:|
 |NALU| - | - |
 |Estinet| - | - |
 
