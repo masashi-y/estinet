@@ -39,7 +39,7 @@ When trained on a dataset consisting of lists of images of length `k=10`, the Es
 Please refer to `requirements.txt` for the versions of libraries used in the reproduction.
 
 ```sh
-pip install torch torchvision hydra
+pip install torch torchvision hydra-core
 ```
 
 For training,
