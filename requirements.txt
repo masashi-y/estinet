@@ -1,0 +1,3 @@
+hydra-core==0.11.3
+torch==1.5.0
+torchvision==0.6.0

@@ -1,7 +1,6 @@
 import hydra
 import logging
 import numpy as np
-from overrides import overrides
 
 import torch
 import torch.nn as nn
@@ -24,14 +23,12 @@ class SumEstimator(nn.Module):
             input_size=10,
             hidden_size=50,
             num_layers=1)
-            # dropout=0.5)
         self.nalu = StackedNALU(
             n_layers=2,
             in_dim=50,
             out_dim=1,
             hidden_dim=100)
 
-    @overrides
     def forward(self, x):
         _, (hs, _) = self.rnn(x)
         hs = torch.squeeze(hs, dim=0)
@@ -60,7 +57,6 @@ class EstiNet(nn.Module):
         self.entropy_threshold = entropy_threshold
         self.entropy_weight = entropy_weight
 
-    @overrides
     def forward(self, x, y=None):
         """
         Arguments:
