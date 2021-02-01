@@ -20,10 +20,10 @@ def make_argument_extractor_cnn():
     return nn.Sequential(
         nn.Conv2d(1, 10, 5, stride=1),
         nn.ReLU(),
-        nn.MaxPool2d(kernel_size=2, stride=0),
+        nn.MaxPool2d(kernel_size=2, stride=None),
         nn.Conv2d(10, 20, 5, stride=1),
         nn.ReLU(),
-        nn.MaxPool2d(kernel_size=2, stride=0),  # (batch_size, 20, 4, 4)
+        nn.MaxPool2d(kernel_size=2, stride=None),  # (batch_size, 20, 4, 4)
         utils.Lambda(lambda x: x.view(-1, 320)),
         nn.Linear(320, 10),
     )
@@ -82,7 +82,7 @@ class EstiNet(nn.Module):
             F.mse_loss(preds, y)
             + self.sum_estimator.loss(
                 utils.onehot(sampled_digits, 10), sampled_sum)
-            + self.entropy_weight * entropy_term
+            - self.entropy_weight * entropy_term
         )
         return preds, loss
 
