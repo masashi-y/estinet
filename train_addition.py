@@ -1,11 +1,10 @@
 import logging
 from typing import Optional, Tuple
 
+import wandb
 import hydra
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
@@ -17,22 +16,23 @@ logger = logging.getLogger(__file__)
 
 
 def make_argument_extractor_cnn():
-    return nn.Sequential(
-        nn.Conv2d(1, 10, 5, stride=1),
-        nn.ReLU(),
-        nn.MaxPool2d(kernel_size=2, stride=None),
-        nn.Conv2d(10, 20, 5, stride=1),
-        nn.ReLU(),
-        nn.MaxPool2d(kernel_size=2, stride=None),  # (batch_size, 20, 4, 4)
+    return torch.nn.Sequential(
+        torch.nn.Conv2d(1, 10, 5, stride=1),
+        torch.nn.ReLU(),
+        torch.nn.MaxPool2d(kernel_size=2, stride=None),
+        torch.nn.Conv2d(10, 20, 5, stride=1),
+        torch.nn.ReLU(),
+        # (batch_size, 20, 4, 4)
+        torch.nn.MaxPool2d(kernel_size=2, stride=None),
         utils.Lambda(lambda x: x.view(-1, 320)),
-        nn.Linear(320, 10),
+        torch.nn.Linear(320, 10),
     )
 
 
-class SumEstimator(nn.Module):
+class SumEstimator(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        self.rnn = nn.LSTM(input_size=10, hidden_size=50, num_layers=1)
+        self.rnn = torch.nn.LSTM(input_size=10, hidden_size=50, num_layers=1)
         self.nalu = StackedNALU(n_layers=2, in_dim=50,
                                 out_dim=1, hidden_dim=100)
 
@@ -44,11 +44,11 @@ class SumEstimator(nn.Module):
 
     def loss(self, x, y):
         preds = self(x)
-        loss = F.mse_loss(preds, y)
+        loss = torch.nn.functional.mse_loss(preds, y)
         return loss
 
 
-class EstiNet(nn.Module):
+class EstiNet(torch.nn.Module):
     def __init__(self, sum_estimator, *, entropy_threshold, entropy_weight):
         super().__init__()
         self.sum_estimator = sum_estimator
@@ -79,7 +79,7 @@ class EstiNet(nn.Module):
             utils.entropy(digits, dim=(0, 2)) - self.entropy_threshold
         ).mean()
         loss = (
-            F.mse_loss(preds, y)
+            torch.nn.functional.mse_loss(preds, y)
             + self.sum_estimator.loss(
                 utils.onehot(sampled_digits, 10), sampled_sum)
             - self.entropy_weight * entropy_term
@@ -148,7 +148,7 @@ def train(
         if epoch % val_interval == 0 and test_fun is not None:
             test_fun()
         avg_loss = 0.0
-        for count, (x, y) in enumerate(data_loader):
+        for step, (x, y) in enumerate(data_loader):
             x, y = x.to(device), y.to(device)
             model.train()
             model.zero_grad()
@@ -157,18 +157,21 @@ def train(
                 "stage: \"%s\" epoch %d loss of batch %d/%d: %f",
                 stage or "",
                 epoch,
-                count,
+                step,
                 len(data_loader),
                 loss.item(),
             )
             loss.backward()
             avg_loss += loss
-            count += 1
             if clip_grad:
-                nn.utils.clip_grad_value_(model.parameters(), clip_grad)
+                torch.nn.utils.clip_grad_value_(model.parameters(), clip_grad)
             elif clip_grad_norm:
-                nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm)
+                torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), clip_grad_norm)
             optimizer.step()
+            wandb.log({"epoch": epoch, "loss": loss.item()})
+        epoch_loss = avg_loss / len(data_loader)
+        wandb.log({"epoch": epoch, "epoch_loss": epoch_loss})
     if test_fun is not None:
         test_fun()
 
@@ -199,24 +202,31 @@ def main(cfg):
         logger.info("start pretraining blackbox estimator")
         pretrain_data_loader = DataLoader(
             Addition(
-                num_samples=cfg.addition.num_samples, arg_size=cfg.addition.arg_size
+                num_samples=cfg.addition.num_samples,
+                arg_size=cfg.addition.arg_size
             ),
             batch_size=cfg.batch_size,
             shuffle=True,
             drop_last=True,
             collate_fn=collate_fn,
         )
-        train(
-            blackbox_estimator,
-            pretrain_data_loader,
-            device,
-            num_epochs=cfg.addition.num_epochs,
-            optimizer=cfg.optimizer,
-            val_interval=cfg.val_interval,
-            stage="pretrain",
-        )
+
+        with wandb.init(project="estinet_pretrain"):
+            train(
+                blackbox_estimator,
+                pretrain_data_loader,
+                device,
+                num_epochs=cfg.addition.num_epochs,
+                optimizer=cfg.optimizer,
+                val_interval=cfg.val_interval,
+                stage="pretrain",
+            )
 
     utils.save_model(blackbox_estimator, "./blackbox_estimator.th")
+
+    wandb.init(
+        project="estinet", config=dict(cfg), reinit=True,
+    )
 
     transform = transforms.Compose(
         [transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))]
@@ -272,25 +282,30 @@ def main(cfg):
         blackbox_estimator, entropy_threshold=0.15, entropy_weight=0.15
     ).to(device)
 
+    wandb.watch(estinet, log="all", log_freq=10)
+
     def mnist_test():
-        estinet.eval()
         correct = 0
+        estinet.eval()
         with torch.no_grad():
             for x, y in mnist_test_loader:
                 x, y = x.to(device), y.to(device)
                 output = estinet.pred_mnist(x)
                 pred = output.argmax(dim=1, keepdim=True)
                 correct += pred.eq(y.view_as(pred)).sum().item()
+
+        accuracy = 100.0 * correct / len(mnist_test_loader.dataset)
         logger.info(
             "MNIST test accuracy: %d/%d (%f%%)",
             correct,
             len(mnist_test_loader.dataset),
-            100.0 * correct / len(mnist_test_loader.dataset),
+            accuracy,
         )
+        return accuracy
 
     best_mae = float("inf")
 
-    def compare_estinet_vs_nalu(data_loader, msg):
+    def compare_estinet_vs_nalu(data_loader):
         nonlocal best_mae
         error_estinet = 0.0
         error_nalu = 0.0
@@ -304,7 +319,10 @@ def main(cfg):
                 error_nalu += (nalu_pred - y).abs().sum().item()
         mae_estinet = error_estinet / len(data_loader.dataset)
         mae_nalu = error_nalu / len(data_loader.dataset)
-        logger.info(msg)
+        logger.info(
+            "Results on dataset with %d arg images",
+            data_loader.dataset.arg_size
+        )
         logger.info("Mean absolute error (Estinet): %f", mae_estinet)
         logger.info("Mean absolute error (NALU): %f", mae_nalu)
 
@@ -312,16 +330,20 @@ def main(cfg):
             logger.info("The metric improved. The parameters are saved")
             utils.save_model(estinet, "./best_model.th")
             best_mae = mae_estinet
-        mnist_test()
+        accuracy = mnist_test()
+        wandb.log(
+            {
+                "mae_estinet": mae_estinet,
+                "mae_nalu": mae_nalu,
+                "accuracy": accuracy
+            }
+        )
 
     train(
         estinet,
         train_data_loader,
         device,
-        test_fun=lambda: compare_estinet_vs_nalu(
-            test_small_loader,
-            f"Results on dataset with {cfg.mnist.test_small.arg_size} arg images",
-        ),
+        test_fun=lambda: compare_estinet_vs_nalu(test_small_loader),
         num_epochs=cfg.mnist.num_epochs,
         optimizer=cfg.optimizer,
         val_interval=cfg.val_interval,
@@ -330,14 +352,8 @@ def main(cfg):
 
     logger.info("The final results using the best model")
     utils.load_model(estinet, "./best_model.th")
-    compare_estinet_vs_nalu(
-        test_small_loader,
-        f"Results on dataset with {cfg.mnist.test_small.arg_size} arg images",
-    )
-    compare_estinet_vs_nalu(
-        test_large_loader,
-        f"Results on dataset with {cfg.mnist.test_large.arg_size} arg images",
-    )
+    compare_estinet_vs_nalu(test_small_loader)
+    compare_estinet_vs_nalu(test_large_loader)
 
 
 if __name__ == "__main__":
