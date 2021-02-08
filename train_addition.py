@@ -209,6 +209,7 @@ def main(cfg):
         utils.load_model(
             blackbox_estimator,
             hydra.utils.to_absolute_path(cfg.pretrained.blackbox_estimator),
+            device=device,
         )
     else:
         logger.info("start pretraining blackbox estimator")

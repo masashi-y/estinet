@@ -25,9 +25,9 @@ def save_model(model, file_path):
         torch.save(model.state_dict(), f)
 
 
-def load_model(model, file_path):
+def load_model(model, file_path, device=None):
     with open(file_path, "rb") as f:
-        model.load_state_dict(torch.load(f))
+        model.load_state_dict(torch.load(f, map_location=device))
 
 
 __optimizers = {

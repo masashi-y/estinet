@@ -14,9 +14,11 @@ class Addition(torch.utils.data.Dataset):
         num_samples: int,
         arg_size: int = 10
     ):
-        self.data = torch.randint(0, 10, size=(num_samples, arg_size))
-        self.onehot_data = onehot(self.data, 10)
-        self.targets = torch.sum(self.data, axis=1)
+        self.data = torch.softmax(
+            torch.randn(num_samples, arg_size, 10),
+            dim=2
+        )
+        self.targets = torch.sum(self.data.argmax(dim=2), axis=1)
 
     def __len__(self) -> int:
         return len(self.data)
@@ -25,7 +27,7 @@ class Addition(torch.utils.data.Dataset):
         self,
         index: int
     ) -> Tuple[torch.LongTensor, torch.LongTensor]:
-        return self.onehot_data[index], self.targets[index]
+        return self.data[index], self.targets[index]
 
 
 class MNISTAddition(torchvision.datasets.MNIST):
