@@ -38,8 +38,10 @@ class SumEstimator(torch.nn.Module):
 
     def forward(self, x):
         _, (hs, _) = self.rnn(x)
+        # shape (hs): (batch_size, hidden_size)
         hs = torch.squeeze(hs, dim=0)
         preds = self.nalu(hs)
+        # shape (hs): (batch_size, hidden_size)
         return preds.view((-1,))
 
     def loss(self, x, y):
@@ -67,23 +69,33 @@ class EstiNet(torch.nn.Module):
             y {torch.Tensor} -- (batch_size,)
         """
         arg_size, batch_size, _, _ = x.size()
+
+        # shape (logits): (arg_size * batch_size, 10)
         logits = self.argument_extractor(x.view((-1, 1, 28, 28)))
+        # shape (digits): (arg_size, batch_size, 10)
         digits = torch.softmax(logits, dim=1).view((arg_size, batch_size, 10))
+
+        # shape (preds): (batch_size,)
+        self.sum_estimator.requires_grad_(False)
         preds = self.sum_estimator(digits)
         if y is None:
             return preds, None
 
-        sampled_digits = digits.argmax(dim=2).detach().requires_grad_(False)
-        sampled_sum = sampled_digits.float().sum(dim=0)
+        # shape (sampled_digits): (arg_size, batch_size, 10)
+        sampled_digits = digits.detach().requires_grad_(False)
+        # shape (sampled_sum): (batch_size,)
+        sampled_sum = sampled_digits.argmax(dim=2).float().sum(dim=0)
         entropy_term = torch.relu(
             utils.entropy(digits, dim=(0, 2)) - self.entropy_threshold
         ).mean()
+
+        self.sum_estimator.requires_grad_(True)
         loss = (
             torch.nn.functional.mse_loss(preds, y)
-            + self.sum_estimator.loss(
-                utils.onehot(sampled_digits, 10), sampled_sum)
+            + self.sum_estimator.loss(sampled_digits, sampled_sum)
             - self.entropy_weight * entropy_term
         )
+
         return preds, loss
 
     def loss(
@@ -305,7 +317,7 @@ def main(cfg):
 
     best_mae = float("inf")
 
-    def compare_estinet_vs_nalu(data_loader):
+    def compare_estinet_vs_nalu(data_loader, split):
         nonlocal best_mae
         error_estinet = 0.0
         error_nalu = 0.0
@@ -333,9 +345,9 @@ def main(cfg):
         accuracy = mnist_test()
         wandb.log(
             {
-                "mae_estinet": mae_estinet,
-                "mae_nalu": mae_nalu,
-                "accuracy": accuracy
+                f"{split}/mae_estinet": mae_estinet,
+                f"{split}/mae_nalu": mae_nalu,
+                f"{split}/accuracy": accuracy
             }
         )
 
@@ -343,7 +355,7 @@ def main(cfg):
         estinet,
         train_data_loader,
         device,
-        test_fun=lambda: compare_estinet_vs_nalu(test_small_loader),
+        test_fun=lambda: compare_estinet_vs_nalu(test_small_loader, "small"),
         num_epochs=cfg.mnist.num_epochs,
         optimizer=cfg.optimizer,
         val_interval=cfg.val_interval,
@@ -352,8 +364,8 @@ def main(cfg):
 
     logger.info("The final results using the best model")
     utils.load_model(estinet, "./best_model.th")
-    compare_estinet_vs_nalu(test_small_loader)
-    compare_estinet_vs_nalu(test_large_loader)
+    compare_estinet_vs_nalu(test_small_loader, "small")
+    compare_estinet_vs_nalu(test_large_loader, "large")
 
 
 if __name__ == "__main__":
